@@ -77,7 +77,7 @@ flowchart LR
         EX[10 exchanges<br/>WebSocket + REST]
         LLM[5 LLM providers<br/>Claude · GPT · Grok · DeepSeek · Groq]
         VOICE[ElevenLabs · Twilio<br/>SIP · WebRTC]
-        PROXY[Cloud Run egress proxy<br/>europe-west1 · rotating IPs]
+        PROXY[Managed egress proxy<br/>rotating IPs · EU region]
     end
 
     FE --> CADDY
@@ -112,14 +112,14 @@ flowchart LR
 |---|---|
 | **Frontend** | Flutter / Dart 3.9 · Provider · GoRouter · custom 20 000×20 000 px canvas with edge wiring |
 | **Backend** | Python 3 · FastAPI · SQLAlchemy 2.0 (sync, psycopg2) · Pydantic |
-| **Data** | PostgreSQL 16 (12 GB shared_buffers, 36 GB effective_cache_size) · Redis 7 (4 GB maxmemory, allkeys-lru) |
+| **Data** | PostgreSQL 16 · Redis 7 (LRU eviction policy) |
 | **Real-time** | WebSocket hub with pub/sub fan-out · Lightstreamer client for IG Markets |
 | **Voice** | ElevenLabs Conversational AI · Asterisk ARI · Twilio · SIP · WebRTC · OpenAI Realtime (translator) |
 | **Auth & crypto** | JWT (python-jose) · bcrypt · Fernet authenticated-encryption for stored secrets |
 | **Edge / TLS** | Caddy 2 · automatic Let's Encrypt · gzip + zstd encoding |
-| **Containers** | Docker · Docker Compose · GitHub Container Registry (ghcr.io) |
-| **CI / CD** | GitHub Actions with paths-filter (rebuild only what changed) → push image → SSH → `docker compose pull && up -d` |
-| **Egress / network** | Cloud Run egress proxy in europe-west1 with rotating IPs — protects against exchange-side IP-concentration rate limits |
+| **Containers** | Docker · Docker Compose · private image registry |
+| **CI / CD** | GitHub Actions with paths-filter — rebuild and redeploy only the services whose code changed |
+| **Egress / network** | Managed serverless egress proxy with rotating IPs (EU region) — protects against exchange-side IP-concentration rate limits |
 | **AI integrations** | Claude / Grok / GPT / DeepSeek / Groq via unified `ctx.llm` router · MCP server with 13 tools (FastMCP) |
 | **Observability** | Plausible analytics · structured logs · Redis stream of monitor events |
 | **Analytics privacy** | No third-party trackers · cookieless analytics · Fernet at rest for secrets |
@@ -173,14 +173,10 @@ End-to-end ElevenLabs Conversational AI integration: phone numbers, AI agents, v
 | Bybit adapter methods | 26 |
 | MCP tools | 13 |
 | Microservices | 6 |
-| Backend host (production) | 12 cores · 48 GB RAM · 250 GB NVMe |
-| Postgres tuning | shared_buffers 12 GB · effective_cache_size 36 GB · work_mem 64 MB |
-| Redis tuning | maxmemory 4 GB · allkeys-lru |
-| Uvicorn workers | 8 |
 | Subdomains served | 4 — apex, app, api, docs |
-| Block-Catalog frontend file size | ~1 200 lines (single source of truth for the registry) |
+| Largest single frontend file | ~2 000 lines (Journal block — CSV export, audio player, campaign grouping, filters) |
 | Telephony router | ~3 350 lines (calls, journal, dialer, runs, batch resolve, audio bridging) |
-| Worker SDK file | ~2 400 lines (16 adapters + sandbox bootstrap + log batcher) |
+| Worker SDK | ~2 400 lines (16 adapters + sandbox bootstrap + log batcher) |
 
 ---
 

@@ -193,7 +193,7 @@ A FastMCP server at `https://api.aispinner.io/mcp-api/mcp` lets any MCP-compatib
 
 All graph mutations go through a single `_modify_graph()` helper that:
 
-1. Reads the latest `workspace_documents` row inside a transaction
+1. Reads the latest graph row inside a transaction
 2. Applies the change
 3. Increments `version`
 4. Writes back
@@ -213,7 +213,7 @@ flowchart LR
 
     PBX[PBX block] -->|chunked campaign| EL
     EL -->|on call end| Webhook[/integrations/sip/post-call/]
-    Webhook --> DB[(telephony_runs<br/>+ transcript)]
+    Webhook --> DB[(Call records<br/>+ transcript)]
 
     Translator[Voice Translator block] -->|2 calls| OAR[OpenAI Realtime ×2]
     OAR -->|translated audio| Translator
@@ -227,11 +227,11 @@ flowchart LR
 
 - **Adopt existing ElevenLabs agents.** `POST /agents/adopt` pulls full configuration (voice, prompt, tools, model, voice settings, temperature, max_tokens, platform tools, safety rules, raw config) into a local AiSpinner record without creating a new agent on ElevenLabs side. Lets users bring already-configured agents onto the canvas non-destructively.
 
-- **Chunked campaign dialer.** A campaign with 1 000 numbers and `max_concurrent: 5` splits into 200 chunks of 5. Each chunk submits a `submit_batch_call()` and waits. Pause/resume/stop is implemented via Redis flags polled at chunk boundaries; the campaign state survives container restarts. After completion: a 60 s wait + 3 retry passes resolves all conversations (transcripts, summaries) before marking the campaign done.
+- **Chunked campaign dialer.** A large campaign is split into chunks sized to the user's chosen concurrency. Each chunk submits a batch and waits for it to complete before the next one starts. Pause / resume / stop is implemented via Redis flags polled at chunk boundaries; the campaign state survives container restarts. After completion, a short wait + retry pass resolves all conversations (transcripts, summaries) before marking the campaign done.
 
 - **Auto-resolve stale campaigns.** When the journal is opened, the backend scans for `batch_running` / `completing` runs whose ElevenLabs batch is actually finished. It resolves one per request (limit to avoid pool exhaustion) and busts the journal cache.
 
-- **Voice Translator.** Bridges two phone lines (often two SignalWire `<Stream>` PSTN sockets). Each side runs its own OpenAI Realtime session. Audio from caller A → ASR → MT (with shared glossary) → TTS → caller B's audio output, and vice versa. The state machine handles connection drops, disagreement on hangup, and end-of-utterance detection.
+- **Voice Translator.** Bridges two phone lines via PSTN audio streams. Each side runs its own real-time speech-to-speech session. Audio from caller A → ASR → MT (with a shared glossary of proper nouns and technical terms) → TTS → caller B's audio output, and vice versa. The state machine handles connection drops, disagreement on hangup, and end-of-utterance detection.
 
 - **Post-call webhooks.** `ai.postcall_webhook` block receives the full ElevenLabs payload (transcript, summary, tool calls, evaluation criteria) and forwards it to the user's destination URL.
 
@@ -268,9 +268,9 @@ Everything user-facing reflects the same edge-as-config model. A short list:
 
 ## What this catalog implies for the engineering work
 
-- **45 blocks × an average of ~700 lines each** in `packages/blocks/lib/src/blocks/` — the biggest single file is `journal_block_body.dart` at ~2 000 lines covering CSV export, audio player, campaign grouping, filters.
-- **3 350 lines** in `telephony/.../telephony_calls.py` — calls, journal, dialer, runs, batch resolve, audio bridging, all in one router because they share a transaction model and a cache-invalidation strategy.
-- **2 400 lines** in `worker-runtime/.../worker_sandbox.py` — 16 adapters + sandbox bootstrap + log batcher.
-- **600 lines** in `core-api/.../mcp_tools.py` — 13 MCP tools, each one a thin wrapper over the corresponding REST endpoint to keep behaviour in lock-step.
+- **45 blocks** averaging ~700 lines of UI code each — the largest single file is the Journal block at ~2 000 lines covering CSV export, audio player, campaign grouping, filters.
+- **The telephony router** is ~3 350 lines of cohesive code: calls, journal, dialer, runs, batch resolve, audio bridging — kept together because they share a transaction model and a cache-invalidation strategy.
+- **The Worker SDK** is ~2 400 lines: 16 adapters + sandbox bootstrap + log batcher.
+- **The MCP server** is ~600 lines: 13 tools, each one a thin wrapper over the corresponding REST endpoint to keep behaviour in lock-step.
 
-The breadth above is real because there's a small set of tight conventions (edge wiring rules, `_ApiMixin`, shared schemas, `_modify_graph` helper). New integrations slot in by following them, not by spawning bespoke code paths.
+The breadth above is real because there's a small set of tight conventions (edge wiring rules, a single API mixin shared by every adapter, shared schemas, a single graph-mutation helper). New integrations slot in by following them, not by spawning bespoke code paths.

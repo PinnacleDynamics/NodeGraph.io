@@ -163,31 +163,15 @@ Each MCP tool is a thin wrapper over the corresponding REST endpoint. They share
 
 ---
 
-## 4. Internal endpoints (worker → backend)
-
-Worker SDK adapters call back into core-api / telephony / worker-runtime via internal endpoints authenticated with short-lived `internal` JWTs minted by `create_internal_token(user_id)`. Workers never see user-facing JWTs.
-
-A small selection:
-
-- `POST /workers/internal/state/get` / `set` / `delete`
-- `POST /workers/internal/log/batch`
-- `POST /workers/internal/monitor/emit`
-- `POST /workers/internal/exchange-keys` — fetch the encrypted-on-disk exchange credentials for the worker's session, decrypt in memory, never write back
-- `POST /workers/internal/ws-session` — for IG Markets, fetch a Lightstreamer session from the trusted backend so the LS handshake doesn't expose credentials to user code
-
-These endpoints are not documented publicly because they're not a stable contract; the SDK is.
-
----
-
-## 5. Auth quick reference
+## 4. Auth quick reference
 
 ```
 Browser / app → JWT in Authorization header
                 or in query string for `<audio>` and WS upgrades
 
-Worker code → no direct knowledge of JWT
-              ctx.* methods route through SDK internal endpoints
-              authenticated by internal JWT minted per session
+Worker code → never sees user-facing JWTs
+              ctx.* methods are authenticated transparently by the SDK
+              with short-lived per-session tokens scoped to the user
 
 AI assistant → JWT Bearer to /mcp-api/mcp
                 same JWT, same authz, same audit trail as REST

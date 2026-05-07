@@ -8,34 +8,32 @@ For the trade-offs that drove these choices, see [decisions.md](decisions.md).
 
 ## 1. Topology
 
-A single VPS hosts the production stack. **12 cores, 48 GB RAM, 250 GB NVMe.** No managed services on the critical path; every component is operationally legible.
+The production stack runs as containerised services behind a single TLS-terminating reverse proxy. Every component is operationally legible — no managed services hidden on the critical path.
 
 ```mermaid
 flowchart TB
     Internet((Internet))
 
-    subgraph Server["VPS · 12 cores · 48 GB RAM"]
-        Caddy[Caddy 2<br/>automatic TLS · 4 subdomains<br/>gzip + zstd]
+    Caddy[Caddy 2<br/>automatic TLS · 4 subdomains<br/>gzip + zstd]
 
-        subgraph Apps["Application containers"]
-            CoreAPI[core-api<br/>:8000 · 8 uvicorn workers]
-            Telephony[telephony<br/>:8001 · voice + dialer workers]
-            WorkerRT[worker-runtime<br/>:8002 · sandbox + adapters]
-            Realtime[realtime<br/>:8003 · WS hub]
-            Jarvis[jarvis<br/>:8004 · AI assistant]
-            Mailer[mailer<br/>:5055 · Node.js email]
-        end
+    subgraph Apps["Application services"]
+        CoreAPI[core-api<br/>auth · graph · MCP]
+        Telephony[telephony<br/>voice · dialer · journal]
+        WorkerRT[worker-runtime<br/>sandbox · ctx adapters]
+        Realtime[realtime<br/>WS hub]
+        Jarvis[jarvis<br/>AI assistant]
+        Mailer[mailer<br/>email]
+    end
 
-        subgraph Data["Data layer"]
-            PG[(PostgreSQL 16<br/>shared_buffers 12 GB)]
-            Redis[(Redis 7<br/>maxmemory 4 GB · allkeys-lru)]
-        end
+    subgraph Data["Data layer"]
+        PG[(PostgreSQL 16)]
+        Redis[(Redis 7<br/>LRU eviction)]
     end
 
     subgraph External["Off-server"]
-        CloudRun[Cloud Run egress proxy<br/>europe-west1 · rotating IPs]
-        GHCR[(ghcr.io<br/>image registry)]
-        GHA[GitHub Actions<br/>CI · paths-filter]
+        CloudRun[Managed egress proxy<br/>rotating IPs · EU region]
+        Registry[(Image registry)]
+        CI[CI · paths-filter]
     end
 
     Internet --> Caddy
@@ -56,7 +54,7 @@ flowchart TB
     WorkerRT --> CloudRun
     Telephony --> CloudRun
 
-    GHA --> GHCR --> Apps
+    CI --> Registry --> Apps
 ```
 
 **Reverse proxy.** Caddy 2 fronts everything. Four subdomains are served from the same instance:
@@ -76,14 +74,14 @@ Caddy handles automatic Let's Encrypt renewal, gzip + zstd encoding, and host-sp
 
 Six processes, all built from the same monorepo. Each has a small, clear responsibility.
 
-| Service | Port | Responsibility |
-|---|---|---|
-| **core-api** | 8000 | Authentication (JWT, bcrypt), workspaces, graph CRUD with optimistic locking, node configs, integrations (encrypted API keys), MCP server with 13 tools, Jarvis chat |
-| **telephony** | 8001 | ElevenLabs Conversational AI, Asterisk ARI bridge, SIP/Twilio phone-number import, chunked campaign auto-dialer, journal with transcripts and audio, post-call webhooks, voice translator (OpenAI Realtime) |
-| **worker-runtime** | 8002 | Python sandbox executor with restricted builtins, 16 `ctx.*` adapters (state, log, monitor, http, 10 exchanges, telegram, files, llm), WebSocket cache to 6 exchanges, log batcher, monitor event stream |
-| **realtime** | 8003 | WebSocket hub. Single connection per workspace fans out 7 event types (journal.new, call.done, batch.status, graph.version, etc.) to all subscribed clients |
-| **jarvis** | 8004 | AI assistant chat. Uses the same ai_tools registry as MCP — keeps the assistant's capabilities and the MCP surface in lock-step. |
-| **mailer** | 5055 | Transactional email (verification codes, password reset). Node.js — historical artifact from before the Python stack consolidated. |
+| Service | Responsibility |
+|---|---|
+| **core-api** | Authentication (JWT, bcrypt), workspaces, graph CRUD with optimistic locking, node configs, integrations (encrypted API keys), MCP server with 13 tools, Jarvis chat |
+| **telephony** | ElevenLabs Conversational AI, Asterisk ARI bridge, SIP/Twilio phone-number import, chunked campaign auto-dialer, journal with transcripts and audio, post-call webhooks, voice translator (OpenAI Realtime) |
+| **worker-runtime** | Python sandbox executor with restricted builtins, 16 `ctx.*` adapters (state, log, monitor, http, 10 exchanges, telegram, files, llm), WebSocket cache to 6 exchanges, log batcher, monitor event stream |
+| **realtime** | WebSocket hub. Single connection per workspace fans out 7 event types (journal.new, call.done, batch.status, graph.version, etc.) to all subscribed clients |
+| **jarvis** | AI assistant chat. Uses the same `ai_tools` registry as MCP — keeps the assistant's capabilities and the MCP surface in lock-step. |
+| **mailer** | Transactional email (verification codes, password reset). Node.js — historical artifact from before the Python stack consolidated. |
 
 A `shared/` Python package is imported by every Python service: ORM models, DB session factory, Redis client, Fernet crypto, Pydantic schemas. This keeps types, table definitions, and connection pools identical across services without copy-paste drift.
 
@@ -97,39 +95,27 @@ Each service has independent CI / deploy tempo. A bug fix in `worker-runtime` re
 
 ### PostgreSQL 16
 
-Tuned for the workload (read-heavy graph + write-heavy telephony events):
+Tuned for the workload (read-heavy graph + write-heavy telephony events). The schema is small and stable:
 
-| Knob | Value | Rationale |
-|---|---|---|
-| `shared_buffers` | 12 GB | 25 % of RAM — the standard PG starting point on 48 GB |
-| `effective_cache_size` | 36 GB | 75 % of RAM — informs the planner about OS page cache |
-| `work_mem` | 64 MB | Sortable journal queries with multiple status / date filters |
-| `shm_size` (Docker) | 16 GB | Required for the increased shared_buffers + work_mem combo |
+- **Account** rows — user, hashed password, country (derived once on first login from IP, then stored)
+- **Workspace** rows — owner, name, plan-derived limits applied at the API layer
+- **Graph** rows — full graph JSON, optimistic locking via monotonically increasing `version`
+- **Per-node config** sidecar — separate from the graph row so node-level edits don't churn graph versions
+- **Telephony run** rows — parent rows are campaigns, child rows are individual calls
+- **Encrypted credential** rows for each integration (SIP, Twilio, ElevenLabs, ARI, exchanges)
 
-**Hot tables.**
-
-| Table | What it stores | Notes |
-|---|---|---|
-| `users` | accounts, hashed password, country code | country derived once on first login from IP |
-| `workspaces` | workspace metadata | one workspace per user on Free, unlimited on Max |
-| `workspace_documents` | full graph JSON | optimistic locking via monotonically increasing `version` |
-| `workspace_node_configs` | per-node JSON config (e.g. PBX settings) | sidecar to graph_json so node-level edits don't bump graph version |
-| `phone_provider_configs` | encrypted Twilio / SIP credentials per node | Fernet encryption at rest |
-| `telephony_runs` | every call + every campaign | parent rows are campaigns, child rows are individual calls |
-| `ari_providers` / `elevenlabs_api_keys` | encrypted integration credentials | `key_hash` (SHA-256) is unique per user to prevent dup-add |
-
-The graph_json column is JSONB. We rebuild it whole on every save (instead of patching). Saves are debounced 550 ms client-side and version-checked server-side — see decisions.md.
+The graph column is JSONB. We rebuild it whole on every save (instead of patching). Saves are debounced client-side and version-checked server-side — see [decisions.md](decisions.md).
 
 ### Redis 7
 
 Used as four distinct things, segmented by key prefix:
 
-1. **Worker state** — `state:{ws_id}:{node_id}:*` — the persistent KV store backing `ctx.state.set/get`
-2. **Caches** — `journal_cache:{md5}`, `pbx_op:*`, `pbx_op_ws:*` — short TTL (60–300 s) for hot reads
-3. **Pub/sub** — `events:ws:{ws_id}` — the channel that the realtime hub fans out to WS clients
-4. **Coordination** — `campaign:{call_id}:signal`, `campaign:{call_id}:running` — TTL'd flags that the dialer reads each chunk to support pause / resume / stop
+1. **Worker state** — the persistent KV store backing `ctx.state.set/get`
+2. **Caches** — short TTL (60–300 s) for hot reads, e.g. journal queries, plan-derived permission checks
+3. **Pub/sub** — the channel that the realtime hub fans out to WebSocket clients
+4. **Coordination flags** — TTL'd entries that the dialer reads at chunk boundaries to support pause / resume / stop on long-running campaigns
 
-`maxmemory 4 GB` with `allkeys-lru` ensures we never run out — when memory pressure hits, the LRU caches evict first; state keys, being touched constantly, stay hot.
+LRU eviction policy ensures memory pressure evicts caches first; state keys, being touched continuously, stay hot.
 
 ---
 
@@ -172,7 +158,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant WR as worker-runtime
     participant RD as Redis
-    participant PR as Cloud Run proxy
+    participant PR as Egress proxy
     participant EX as Exchange
 
     U->>CO: POST /workers/deploy<br/>(code, tick_interval, connected_blocks)
@@ -217,15 +203,15 @@ See [integrations.md](integrations.md) for the full `ctx.*` adapter list.
 
 ---
 
-## 6. Egress proxy (Cloud Run)
+## 6. Egress proxy
 
-A separate FastAPI service running on Cloud Run in `europe-west1`. Every outbound call from worker code (`ctx.http`, `ctx.binance`, `ctx.bybit`, etc.) is routed through it.
+A separate small service runs in a managed serverless environment with rotating egress IPs (EU region, multi-tenant). Every outbound call from worker code (`ctx.http`, `ctx.binance`, `ctx.bybit`, etc.) is routed through it.
 
-**Problem it solves.** When 100+ users share the same VPS IP and all hit Bybit's API with their own keys, the exchange's IP-concentration heuristics flag the IP as suspicious and rate-limit or temporarily block the entire IP. Without the proxy, one user's misbehaving worker degrades the platform for everyone.
+**Problem it solves.** When many users share a single backend IP and all hit an exchange's API with their own keys, the exchange's IP-concentration heuristics flag the IP as suspicious and rate-limit or temporarily block the entire IP. Without the proxy, one user's misbehaving worker degrades the platform for everyone.
 
-**How it solves it.** Cloud Run instances scale across rotating egress IPs. The proxy passes the request through with HMAC-signed bodies preserved byte-for-byte (a `raw_body=True` flag forwards the raw bytes instead of re-serializing — critical for Bybit / OKX HMAC).
+**How it solves it.** The proxy distributes traffic across rotating egress IPs. HMAC-signed bodies (Bybit, OKX) pass through byte-for-byte — Python's default JSON encoder reorders keys alphabetically and would break exchange-side signature verification, so the proxy forwards the raw request body when needed.
 
-This is a **trade-off**, not a free win. Documented in [decisions.md → "Cloud Run egress proxy"](decisions.md#7-cloud-run-egress-proxy).
+This is a **trade-off**, not a free win. Documented in [decisions.md → "Egress proxy"](decisions.md#7-egress-proxy).
 
 ---
 
@@ -237,7 +223,7 @@ This is a **trade-off**, not a free win. Documented in [decisions.md → "Cloud 
 | Session tokens | JWT (python-jose) with `uid`, `role`, `plan`; signed with HS256 |
 | API keys / wallet creds / SIP secrets | Fernet authenticated-encryption at rest. The encryption key lives in env, never in DB. Decrypted just-in-time by the service that needs to make the upstream call |
 | Browser→server | HTTPS only; Caddy auto-renews Let's Encrypt |
-| Internal tokens for worker → backend | Short-lived JWTs minted by `create_internal_token(user_id)` per worker session. Workers never see user-facing JWTs |
+| Worker ↔ backend communication | Short-lived internal tokens minted per worker session, scoped to that user. Workers never see user-facing JWTs |
 | MCP endpoint | Standard JWT Bearer. Same auth surface as REST. Stateless (`stateless_http=True` in FastMCP) |
 
 Secrets are never logged. The CI does not have access to production secrets — they live only on the VPS in a `.env` file outside the repo.
@@ -265,8 +251,8 @@ The frontend treats edges as first-class. When the user draws a Worker → Bybit
 
 ```mermaid
 flowchart LR
-    Dev[git push origin main]
-    GHA[GitHub Actions<br/>paths-filter computes<br/>SERVICES_TO_RESTART]
+    Dev[git push to main]
+    CI[CI · paths-filter<br/>computes changed services]
 
     subgraph Build["Build matrix · only changed services"]
         B1[core-api]
@@ -277,17 +263,16 @@ flowchart LR
         B6[mailer]
     end
 
-    GHCR[(ghcr.io)]
-    SSH[SSH to VPS]
-    Compose[docker compose pull && up -d]
+    Registry[(Image registry)]
+    Deploy[Pull + recreate<br/>changed containers only]
 
-    Dev --> GHA
-    GHA --> Build
-    Build --> GHCR
-    GHCR --> SSH --> Compose
+    Dev --> CI
+    CI --> Build
+    Build --> Registry
+    Registry --> Deploy
 ```
 
-The deploy compose file lives at `/srv/deploy/docker-compose.yml` on the VPS. It pulls images from `ghcr.io/pinnacledynamics/aispinner/*`. CI computes which services changed using GitHub's `dorny/paths-filter` action, builds only those, and re-creates only those containers. A single-service deploy takes ~60 s end-to-end.
+CI computes which services changed from the diff and rebuilds only those. The result is short feedback loops: a one-line bug fix in one service does not rebuild or redeploy the other five.
 
 ---
 
@@ -295,7 +280,7 @@ The deploy compose file lives at `/srv/deploy/docker-compose.yml` on the VPS. It
 
 - **Plausible analytics** on landing & docs — privacy-first, cookieless, no third-party trackers
 - **Structured logs** from every service to stdout, captured by Docker's json-file driver
-- **Worker logs** — batched per-tick by the worker SDK, sent to `core-api` via internal endpoint, surfaced in the UI and queryable via `GET /workers/{ws}/{node}/logs`
+- **Worker logs** — batched per-tick by the worker SDK, surfaced in the UI and queryable via `GET /workers/{ws}/{node}/logs`
 - **Monitor stream** — `Redis stream monitor:events:{ws_id}:{node_id}` keeps the last N monitor renders for the frontend to lazy-load on Monitor block expansion
 - **Health** — Caddy logs each upstream response code; container restarts are logged by docker
 

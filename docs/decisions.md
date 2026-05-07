@@ -94,19 +94,19 @@ Every entry follows the same shape:
 
 ---
 
-## 7. Cloud Run egress proxy
+## 7. Egress proxy
 
-**Decision.** All outbound HTTP from worker code is routed through a small FastAPI service running on Cloud Run in `europe-west1`. Cloud Run rotates exit IPs across instances.
+**Decision.** All outbound HTTP from worker code is routed through a small dedicated service running in a managed serverless environment with rotating egress IPs.
 
 **Alternatives considered.**
-- **Direct from VPS.** Would have worked at small scale.
-- **Per-user residential proxy provider.** Expensive ($X per GB), latency-variable, and needs per-user routing.
+- **Direct from the backend.** Would have worked at small scale.
+- **Per-user residential proxy provider.** Expensive (per-GB pricing), latency-variable, and needs per-user routing.
 
-**Trade-off.** Adds 20–40 ms to each outbound call (VPS → Cloud Run → exchange) versus VPS → exchange directly. We accepted this because of a real production failure mode: when 100+ users all hit Bybit from the same VPS IP with their own keys, Bybit's IP-concentration heuristics flag the IP as suspicious and rate-limit / temporarily ban it for everyone. The proxy distributes traffic across rotating egress IPs, eliminating that failure mode.
+**Trade-off.** Adds tens of milliseconds to each outbound call versus going direct. We accepted this because of a real production failure mode: when many users all hit an exchange from the same backend IP with their own keys, the exchange's IP-concentration heuristics flag the IP as suspicious and rate-limit / temporarily ban it for everyone. The proxy distributes traffic across rotating egress IPs, eliminating that failure mode.
 
-The proxy's `raw_body=True` flag is interesting on its own: HMAC-signed requests (Bybit, OKX) require the exact byte sequence of the body to validate the signature server-side. We had to add a flag to forward the raw bytes instead of re-serializing JSON, because Python's default JSON encoder reorders keys alphabetically and breaks the signature.
+The proxy's raw-body forwarding is interesting on its own: HMAC-signed requests require the exact byte sequence of the body to validate the signature server-side. The proxy had to grow a flag to forward raw bytes instead of re-serializing JSON, because Python's default JSON encoder reorders keys alphabetically and breaks signature verification.
 
-**Status.** Working. Region was originally `us-central1`, which broke European exchange APIs (timeouts to Bybit / IG / OKX); migrated to `europe-west1` and the issues went away.
+**Status.** Working. Region selection turned out to matter — an early version was deployed in a US region and saw timeouts to European exchange APIs; moved to an EU region and the issues went away.
 
 ---
 
@@ -164,8 +164,6 @@ The proxy's `raw_body=True` flag is interesting on its own: HMAC-signed requests
 **Trade-off.** nginx has a deeper community, more documentation, more StackOverflow answers. Caddy has automatic Let's Encrypt out of the box (no certbot cron), gentler config syntax, and HTTP/3 by default. We accepted "less StackOverflow" in exchange for "no certbot to ever debug at 2 AM" and a config file that's a quarter the size.
 
 **Status.** Working. Migrated *to* Caddy from nginx mid-project, no regrets.
-
-There is one operational gotcha worth recording: when CI deploys a new Caddyfile, it lands at `/srv/deploy/Caddyfile`, but Caddy's container reads `/aispinner/caddy/Caddyfile`. After Caddyfile edits we have to `scp` to the second path and run `docker exec aispinner_caddy caddy reload`. This dual-mount is a wart from an early decision; the right fix is to make CI write to the container's mount path directly.
 
 ---
 
