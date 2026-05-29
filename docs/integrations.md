@@ -1,12 +1,12 @@
 # Integrations
 
-Breadth catalog: every block, every Worker SDK adapter, the telephony stack, MCP tools, and the WebSocket streaming tier. Use this to evaluate range and depth of integration work.
+Breadth catalog: every block, every Worker SDK adapter, the telephony stack, MCP tools, and the real-time WebSocket data tier. Use this to evaluate range and depth of integration work.
 
-For the architectural choices behind these, see [architecture.md](architecture.md). For trade-offs, see [decisions.md](decisions.md).
+For the architectural choices behind these, see [architecture.md](architecture.md). For the trade-offs, see [decisions.md](decisions.md).
 
 ---
 
-## 1. Block catalog (45+ across 9 sections)
+## 1. Block catalog (45+ across 7 sections)
 
 A block is the atomic unit on the canvas. Each has a type ID, a default config, a UI body, and edge wiring rules that auto-patch its config when connected to other blocks.
 
@@ -39,7 +39,7 @@ A block is the atomic unit on the canvas. Each has a type ID, a default config, 
 | DeepSeek | `ai.deepseek_agent` | DeepSeek V3 + R1 reasoning |
 | Groq | `ai.groq_agent` | Groq — ultra-fast Llama, Mixtral, Gemma inference |
 
-All AI Agent blocks share a hub-style config: they accept connections from messengers, trading, data, files, and more, exposing those capabilities as tools to the underlying LLM.
+All AI Agent blocks share a hub-style config: they accept connections from messengers, external-data adapters, files, and more, exposing those capabilities as tools to the underlying LLM.
 
 ### Automation (3)
 
@@ -48,41 +48,6 @@ All AI Agent blocks share a hub-style config: they accept connections from messe
 | Worker | `code.worker` | Python — runs in browser sandbox or on the server |
 | Scheduler | `automation.scheduler` | Trigger connected blocks on an interval (cron-style) |
 | Logic Gate | `automation.logic_gate` | Conditional routing — IF/THEN/ELSE for events |
-
-### Trading — Crypto (8)
-
-| Block | Type ID | Plan | Notes |
-|---|---|---|---|
-| Bybit | `trading.bybit` | free | Spot + derivatives, 26 methods |
-| Binance | `trading.binance` | free | Spot + futures, 31 methods, WebSocket-cached |
-| Coinbase | `trading.coinbase` | pro · server-only | Advanced Trade API |
-| OKX | `trading.okx` | pro · server-only | Spot, swaps, futures |
-| Kraken | `trading.kraken` | pro · server-only | Balance, orders, trading |
-| Deribit | `trading.deribit` | pro · server-only | Crypto options, futures, perpetuals — 33 methods |
-| Hyperliquid | `trading.hyperliquid` | pro | On-chain perpetuals DEX, EIP-712 wallet signing |
-| Bitget | `trading.bitget` | pro | Spot + USDT-FUTURES, copy-trading |
-
-### Trading — Traditional (2)
-
-| Block | Type ID | Plan | Notes |
-|---|---|---|---|
-| IG Markets | `trading.ig` | pro · server-only | CFDs, forex, indices, commodities — Lightstreamer |
-| Interactive Brokers | `trading.ibkr` | free | Stocks, options, futures, forex — Gateway / TWS mode |
-
-### Prediction Markets (2)
-
-| Block | Type ID | Plan |
-|---|---|---|
-| Polymarket Monitor | `prediction.polymarket_monitor` | free |
-| Polymarket Trader | `prediction.polymarket_trader` | pro |
-
-### Data Feeds (3)
-
-| Block | Type ID | What it provides |
-|---|---|---|
-| CoinGecko | `data.coingecko` | Crypto market data — prices, volumes, trends |
-| Twelve Data | `data.twelve_data` | Stocks, forex, indices, commodities |
-| Apify | `data.apify` | Universal web scraping — 3 000+ actors |
 
 ### Messengers (7)
 
@@ -114,7 +79,7 @@ All AI Agent blocks share a hub-style config: they accept connections from messe
 
 ## 2. Worker SDK — `ctx.*` adapters
 
-The 16-method object injected into every Python worker. Each adapter requires the corresponding block to be connected via an edge — otherwise calling its methods raises `RuntimeError`.
+The object injected into every Python worker. Each adapter requires the corresponding block to be connected via an edge — otherwise calling its methods raises `RuntimeError`. Every adapter follows a uniform `_ApiMixin` pattern, so adding a new integration is a small, well-bounded diff rather than a bespoke code path.
 
 | Adapter | Methods | What it provides |
 |---|---|---|
@@ -122,52 +87,37 @@ The 16-method object injected into every Python worker. Each adapter requires th
 | `ctx.log` | 5 | Batched info / warn / error / debug logs |
 | `ctx.monitor` | 4 + builders | Stream widgets to a connected Monitor block |
 | `ctx.http` | 3 | GET / POST / fetch through Cloud Run egress proxy |
-| `ctx.bybit` | 26 | Bybit — spot + derivatives, WebSocket-cached |
-| `ctx.binance` | 31 | Binance — spot + futures, WebSocket-cached |
-| `ctx.coinbase` | 12 | Coinbase Advanced Trade |
-| `ctx.okx` | 15 | OKX — spot, swaps, futures |
-| `ctx.kraken` | 12 | Kraken |
-| `ctx.deribit` | 33 | Deribit — options, futures, perps, vol indices |
-| `ctx.hyperliquid` | — | On-chain perpetuals DEX with EIP-712 signing |
-| `ctx.bitget` | — | Bitget — spot + perpetuals |
-| `ctx.ibkr` | 7 | Interactive Brokers Web API (Gateway mode) |
-| `ctx.ig` | 9 REST + 5 streaming | IG Markets — CFD, forex, indices via Lightstreamer |
-| `ctx.polymarket` | 9 | Polymarket — prediction markets |
 | `ctx.telegram` | 3 | Send / read / chat info via Telegram Bot |
 | `ctx.files` | 4 | Read / write / list / delete in sandboxed FS |
 | `ctx.llm` | `.ask` + `.claude` / `.grok` / `.deepseek` / `.groq` + `.ask_with_tools` | Multi-provider LLM routing — pick by name |
 | `ctx.connected_blocks` | (read-only) | Map showing which blocks are wired to this worker |
+
+Beyond these, the same `_ApiMixin` pattern backs a family of **real-time external-data adapters** — long-lived WebSocket connections to third-party APIs and data sources, exposed to worker code with the same uniform method shape (see the WebSocket data tier below).
 
 ### Multi-LLM routing
 
 ```python
 def tick(ctx):
     # Use the first connected LLM block
-    answer = ctx.llm.ask("Summarize current BTC sentiment.", system="You are a crypto analyst.")
+    answer = ctx.llm.ask("Summarize today's support tickets.", system="You are a helpful analyst.")
 
     # Force a specific provider when multiple are connected
-    fast = ctx.llm.groq("Classify this text: ...")           # Groq — sub-second
-    deep = ctx.llm.claude("Plan a 5-step trading strategy")  # Claude — reasoning
+    fast = ctx.llm.groq("Classify this text: ...")            # Groq — sub-second
+    deep = ctx.llm.claude("Draft a 5-step onboarding plan")   # Claude — reasoning
     cheap = ctx.llm.deepseek("Translate to Russian")          # DeepSeek — cost
 ```
 
 This lets a worker stitch together "fast classifier → deep reasoner → cheap translator" without thinking about API keys, billing, or vendor SDKs.
 
-### WebSocket-cached methods
+### WebSocket data tier — sub-millisecond live data
 
-In Server execution mode, the runtime opens long-lived WS connections to supported exchanges. Cached methods return from in-memory state in **0 ms** instead of 80–250 ms via REST, with no rate-limit ceiling.
+In Server execution mode, the runtime opens long-lived WebSocket connections to supported external data sources and third-party APIs. Cached reads return from in-memory state in **0 ms** instead of 80–250 ms via REST, with no rate-limit ceiling. A worker simply calls the adapter method; the runtime decides whether to serve from the live cache or fall back to REST.
 
-| Exchange | Cached methods |
-|---|---|
-| Bybit | 4/5 — ticker, balance, positions, orders |
-| Binance | 3 — ticker, account, positions |
-| Deribit | 4/4 — ticker, account summary, positions, orders |
-| OKX | ticker, orderbook, positions, orders, balance |
-| Coinbase | ticker + orders |
-| Kraken | ticker, orderbook, orders, balance |
-| IG Markets | Lightstreamer — ACCOUNT (0 ms) ; PRICE/CHART require account-level streaming permissions |
+- **Push, not poll.** The runtime subscribes once and keeps the latest snapshot warm in memory; worker reads never touch the network.
+- **No rate-limit ceiling.** Because cached reads don't hit the upstream API, a busy worker can read state every tick without burning a request quota.
+- **Automatic REST fallback** in Browser execution mode, where no persistent WS connection is available.
 
-REST fallback is automatic in Browser mode (no WS connection available).
+This same caching pathway is reused across every real-time external-data adapter — a single mechanism rather than a per-source implementation.
 
 ---
 
@@ -268,36 +218,36 @@ Everything user-facing reflects the same edge-as-config model. A short list:
 
 ## 7. How a new block is added
 
-Every block on the canvas is registered through a single declarative API. A new integration — say, a new exchange, a new messenger, or a private vendor block for a specific client — is a small, well-bounded diff against the platform, not a fork.
+Every block on the canvas is registered through a single declarative API. A new integration — say, a new messenger, a new data source, or a private vendor block for a specific client — is a small, well-bounded diff against the platform, not a fork.
 
 The five pieces (most blocks need only the first two):
 
 ```dart
 // 1. Declarative definition — type ID, config defaults, plan, layout
 BlockDefinition(
-  type: 'trading.acmecex',
-  title: 'AcmeCEX',
-  section: 'Trading',
-  subgroup: 'Crypto',
+  type: 'messenger.acmechat',
+  title: 'AcmeChat',
+  section: 'Messengers',
+  subgroup: 'AcmeChat',
   minPlan: 'pro',
   serverOnly: true,
   defaultCfg: const {
-    'acmecex_key_id': null,
-    'default_pair': 'BTC/USD',
+    'acmechat_key_id': null,
+    'default_channel': 'general',
     'llm_node_id': '',
   },
-  buildBody: (_, bc) => AcmeCexBlockBody(bc: bc),       // 2. UI
-  buildInspector: AcmeCexInspector.build,               // 3. (optional) inspector schema
+  buildBody: (_, bc) => AcmeChatBlockBody(bc: bc),      // 2. UI
+  buildInspector: AcmeChatInspector.build,              // 3. (optional) inspector schema
 )
 
 // 4. Edge wiring rules — auto-patch cfg when edges are drawn
-EdgeWiringRule('code.worker',  'trading_node_ids', 'trading.acmecex'),
-EdgeWiringRule('ai.llm_agent', 'trading_node_id',  'trading.acmecex'),
+EdgeWiringRule('code.worker',  'messenger_node_ids', 'messenger.acmechat'),
+EdgeWiringRule('ai.llm_agent', 'messenger_node_id',  'messenger.acmechat'),
 
 // 5. (Server-mode) ctx adapter — exposes the API inside worker code
-class AcmeCexAdapter(_ApiMixin):
-    def get_ticker(self, pair: str = "BTC/USD") -> dict: ...
-    def place_order(self, pair: str, side: str, qty: str): ...
+class AcmeChatAdapter(_ApiMixin):
+    def get_messages(self, channel: str = "general") -> dict: ...
+    def send_message(self, channel: str, text: str): ...
 ```
 
 That's the entire surface. **The catalog page, the inspector dialog, the edge auto-wiring, the SDK exposure to worker code** — all generated from these declarations. No per-block dialog widget, no per-block routing, no per-pair edge-handling code.
@@ -310,7 +260,7 @@ This is the single most important architectural decision for the breadth catalog
 
 - **45 blocks** averaging ~700 lines of UI code each — the largest single file is the Journal block at ~2 000 lines covering CSV export, audio player, campaign grouping, filters.
 - **The telephony router** is ~3 350 lines of cohesive code: calls, journal, dialer, runs, batch resolve, audio bridging — kept together because they share a transaction model and a cache-invalidation strategy.
-- **The Worker SDK** is ~2 400 lines: 16 adapters + sandbox bootstrap + log batcher.
+- **The Worker SDK** is ~2 400 lines: a family of `_ApiMixin` adapters + sandbox bootstrap + log batcher.
 - **The MCP server** is ~600 lines: 13 tools, each one a thin wrapper over the corresponding REST endpoint to keep behaviour in lock-step.
 
 The breadth above is real because there's a small set of tight conventions (edge wiring rules, a single API mixin shared by every adapter, shared schemas, a single graph-mutation helper). New integrations slot in by following them, not by spawning bespoke code paths.

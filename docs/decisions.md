@@ -13,11 +13,11 @@ Every entry follows the same shape:
 
 ## 1. Edges as the only source of configuration
 
-**Decision.** When a user draws an edge between two blocks on the canvas, we automatically patch the source block's config to point at the target. There is no second step ("now go into the inspector and set `trading_node_id` to `bybit_xyz`"). Delete the edge → the field is cleared → the connection is gone.
+**Decision.** When a user draws an edge between two blocks on the canvas, we automatically patch the source block's config to point at the target. There is no second step ("now go into the inspector and set `telegram_node_id` to `telegram_xyz`"). Delete the edge → the field is cleared → the connection is gone.
 
 **Alternatives considered.**
 - **Explicit binding through inspectors.** The pattern most node editors use (n8n, Make, Zapier).
-- **Implicit via type-matching.** "Worker auto-discovers all Bybit blocks in the workspace." Brittle when there are multiple of the same type.
+- **Implicit via type-matching.** "Worker auto-discovers all Telegram blocks in the workspace." Brittle when there are multiple of the same type.
 
 **Trade-off.** Adding a new wireable field requires touching the central edge-wiring rule table (`kEdgeWiringRules`). It centralises a thing that could otherwise be local to a block. We accepted this because the rule table is small (~80 entries for 45 blocks) and a single source of truth simplifies reasoning.
 
@@ -39,17 +39,17 @@ Every entry follows the same shape:
 
 ---
 
-## 3. WebSocket-cached exchange tier
+## 3. WebSocket-cached live-data tier
 
-**Decision.** In Server execution mode, the worker-runtime maintains long-lived WebSocket connections to Bybit, Binance, Deribit, OKX, Coinbase, Kraken, and IG Markets (via Lightstreamer). Cached methods on each `ctx.{exchange}` adapter return from in-memory state in 0 ms; non-cached methods fall through to REST.
+**Decision.** In Server execution mode, the worker-runtime maintains long-lived WebSocket connections to external data sources and third-party APIs. Cached methods on each `ctx` adapter return from in-memory state in 0 ms; non-cached methods fall through to REST.
 
 **Alternatives considered.**
-- **Pure REST with aggressive caching at the proxy layer.** Wouldn't have helped per-user balance/positions which are user-specific.
-- **Per-worker WebSocket.** Wasteful — many workers in one workspace would each open their own WS to the same exchange. We share connections per workspace + exchange.
+- **Pure REST with aggressive caching at the proxy layer.** Wouldn't have helped per-user state which is user-specific.
+- **Per-worker WebSocket.** Wasteful — many workers in one workspace would each open their own WS to the same upstream. We share connections per workspace + data source.
 
-**Trade-off.** The cache is **eventually consistent**. A WS reconnect can briefly serve stale data. Workers building millisecond-sensitive strategies must understand this (documented in the streaming doc); for everyone else it's a free 80–250 ms latency win.
+**Trade-off.** The cache is **eventually consistent**. A WS reconnect can briefly serve stale data. Workers building millisecond-sensitive logic must understand this (documented in the streaming doc); for everyone else it's a free 80–250 ms latency win.
 
-**Status.** Working as intended. Concrete measured win: `get_ticker` calls drop from ~120 ms (REST + Cloud Run hop) to <1 ms.
+**Status.** Working as intended. Concrete measured win: cached reads drop from ~120 ms (REST + egress-proxy hop) to <1 ms.
 
 ---
 
@@ -63,7 +63,7 @@ Every entry follows the same shape:
 
 **Trade-off.** Two execution paths means two implementations of the SDK semantics — Browser-mode adapters call the user's REST API directly with their JWT, Server-mode adapters call internal endpoints with a minted internal JWT. Bugs are usually in the asymmetry. We accepted this because the alternative — forcing every Free user onto a paid plan to do anything useful — would have killed adoption.
 
-**Status.** Working. Browser mode is great for development, Server mode for production. Some adapters (Coinbase, OKX, Kraken, Deribit, IG) are flagged `serverOnly` because their APIs don't tolerate browser-origin requests anyway.
+**Status.** Working. Browser mode is great for development, Server mode for production. Some adapters are flagged `serverOnly` because their upstream APIs don't tolerate browser-origin requests anyway.
 
 ---
 
@@ -102,11 +102,11 @@ Every entry follows the same shape:
 - **Direct from the backend.** Would have worked at small scale.
 - **Per-user residential proxy provider.** Expensive (per-GB pricing), latency-variable, and needs per-user routing.
 
-**Trade-off.** Adds tens of milliseconds to each outbound call versus going direct. We accepted this because of a real production failure mode: when many users all hit an exchange from the same backend IP with their own keys, the exchange's IP-concentration heuristics flag the IP as suspicious and rate-limit / temporarily ban it for everyone. The proxy distributes traffic across rotating egress IPs, eliminating that failure mode.
+**Trade-off.** Adds tens of milliseconds to each outbound call versus going direct. We accepted this because of a real production failure mode: when many users all hit the same third-party API from the same backend IP with their own keys, the API's IP-concentration heuristics flag the IP as suspicious and rate-limit / temporarily ban it for everyone. The proxy distributes traffic across rotating egress IPs, eliminating that failure mode.
 
 The proxy's raw-body forwarding is interesting on its own: HMAC-signed requests require the exact byte sequence of the body to validate the signature server-side. The proxy had to grow a flag to forward raw bytes instead of re-serializing JSON, because Python's default JSON encoder reorders keys alphabetically and breaks signature verification.
 
-**Status.** Working. Region selection turned out to matter — an early version was deployed in a US region and saw timeouts to European exchange APIs; moved to an EU region and the issues went away.
+**Status.** Working. Region selection turned out to matter — an early version was deployed in a US region and saw timeouts to European third-party APIs; moved to an EU region and the issues went away.
 
 ---
 
@@ -126,7 +126,7 @@ The proxy's raw-body forwarding is interesting on its own: HMAC-signed requests 
 
 ## 9. Fernet for at-rest encryption of secrets
 
-**Decision.** API keys, OAuth tokens, wallet keys, SIP secrets are encrypted at rest using Fernet (AES-128-CBC + HMAC-SHA256, with rotation support).
+**Decision.** API keys, OAuth tokens, SIP secrets are encrypted at rest using Fernet (AES-128-CBC + HMAC-SHA256, with rotation support).
 
 **Alternatives considered.**
 - **Plaintext + filesystem permissions.** No.
@@ -183,7 +183,7 @@ The proxy's raw-body forwarding is interesting on its own: HMAC-signed requests 
 
 ## 13. A declarative block platform, not a hard-coded set
 
-**Decision.** Every block — every exchange, every messenger, every voice integration, every monitor, every utility — is registered through a single declarative API: a `BlockDefinition`, a UI widget, an optional inspector schema, edge wiring rules, and (for server-mode integrations) a `ctx` adapter following a shared mixin. The catalog page, the inspector dialog, the edge auto-wiring, and the worker SDK exposure are all generated from those declarations.
+**Decision.** Every block — every integration, every messenger, every voice integration, every monitor, every utility — is registered through a single declarative API: a `BlockDefinition`, a UI widget, an optional inspector schema, edge wiring rules, and (for server-mode integrations) a `ctx` adapter following a shared mixin. The catalog page, the inspector dialog, the edge auto-wiring, and the worker SDK exposure are all generated from those declarations.
 
 **Alternatives considered.**
 - **Hard-coded blocks.** A bespoke route for each block, a hand-written dialog per block, hand-coded edge logic per (source, target) pair. Faster to write the first 5 blocks; collapses under its own weight by block 20.
@@ -202,4 +202,4 @@ The other trade-off: a single declarative API means the UI is necessarily unifor
 
 If the trade-offs above feel reasonable to you, we'll probably get along. If you have strong opinions on any of them — especially #6 (sync DB) or #10 (MCP-over-REST) — I'd genuinely enjoy the conversation. Open an issue, or reach out via [LinkedIn](https://www.linkedin.com/in/gennady-mikhaylov/).
 
-The pattern across all twelve decisions is the same: **prefer the simpler thing that is good enough, document where it bends, plan the upgrade path before it breaks**. That's the engineering style worth hiring.
+The pattern across all thirteen decisions is the same: **prefer the simpler thing that is good enough, document where it bends, plan the upgrade path before it breaks**. That's the engineering style worth hiring.

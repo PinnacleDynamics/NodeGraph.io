@@ -5,7 +5,7 @@
 <h1 align="center">AiSpinner</h1>
 
 <p align="center">
-  <strong>Visual node-based constructor for AI voice agents, trading bots, and 24/7 automation workflows.</strong>
+  <strong>Visual node-based constructor for AI voice agents, messenger bots, and 24/7 automation workflows.</strong>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/blocks-45+-C8A25A?style=flat-square" alt="45+ blocks">
-  <img src="https://img.shields.io/badge/exchanges-10-C8A25A?style=flat-square" alt="10 exchanges">
+  <img src="https://img.shields.io/badge/messengers-7-C8A25A?style=flat-square" alt="7 messenger blocks">
   <img src="https://img.shields.io/badge/LLM_providers-5-C8A25A?style=flat-square" alt="5 LLM providers">
   <img src="https://img.shields.io/badge/MCP_tools-13-C8A25A?style=flat-square" alt="13 MCP tools">
   <img src="https://img.shields.io/badge/microservices-6-C8A25A?style=flat-square" alt="6 microservices">
@@ -28,10 +28,10 @@
 
 ## What it is
 
-AiSpinner is a **production-deployed** visual platform where users compose AI workflows by dragging blocks onto a canvas and connecting them with edges. Behind the scenes it executes those workflows — making real phone calls, placing trades on 10 exchanges, running sandboxed Python 24/7, querying 5 LLM providers, scraping the web, and pushing real-time monitoring to dashboards.
+AiSpinner is a **production-deployed** visual platform where users compose AI workflows by dragging blocks onto a canvas and connecting them with edges. Behind the scenes it executes those workflows — making and answering real phone calls, running AI voice agents, driving Telegram / WhatsApp / Discord / Matrix bots, running sandboxed Python 24/7, querying 5 LLM providers, calling any external API or CRM, and pushing real-time monitoring to dashboards.
 
 > ![Canvas screenshot](assets/screenshots/canvas-overview.png)
-> _Workspace canvas: Worker block connected to Bybit, Telegram, Monitor, and Claude Agent. Drawing the edge automatically wires up the SDK — `ctx.bybit`, `ctx.telegram`, etc. — inside the worker code._
+> _Workspace canvas: Worker block connected to Telegram, an external API, Monitor, and Claude Agent. Drawing the edge automatically wires up the SDK — `ctx.telegram`, `ctx.http`, etc. — inside the worker code._
 
 The repository here is a **public showcase**. The source itself is closed, but every architectural decision, integration, and trade-off is documented in this repo at the depth a senior engineer or a hiring AI assistant needs to evaluate it.
 
@@ -41,7 +41,7 @@ The repository here is a **public showcase**. The source itself is closed, but e
 
 1. **[`docs/architecture.md`](docs/architecture.md)** — System topology: 6 microservices, data flow, real-time event hub, deploy pipeline, scale considerations.
 2. **[`docs/integrations.md`](docs/integrations.md)** — Breadth: every block, every `ctx` adapter, MCP tools, telephony stack, WebSocket streaming tier.
-3. **[`docs/decisions.md`](docs/decisions.md)** — The interesting bit: 12 architectural decisions with trade-offs spelled out. Read this if you're evaluating engineering judgement.
+3. **[`docs/decisions.md`](docs/decisions.md)** — The interesting bit: 13 architectural decisions with trade-offs spelled out. Read this if you're evaluating engineering judgement.
 
 [`docs/api-overview.md`](docs/api-overview.md) covers the public REST + WebSocket + MCP surface for completeness.
 
@@ -74,7 +74,8 @@ flowchart LR
     end
 
     subgraph External
-        EX[10 exchanges<br/>WebSocket + REST]
+        EX[External APIs / data sources<br/>WebSocket + REST]
+        MSG[Messengers<br/>Telegram · WhatsApp · Discord · Matrix]
         LLM[5 LLM providers<br/>Claude · GPT · Grok · DeepSeek · Groq]
         VOICE[ElevenLabs · Twilio<br/>SIP · WebRTC]
         PROXY[Managed egress proxy<br/>rotating IPs · EU region]
@@ -94,6 +95,7 @@ flowchart LR
     RT --> RD
 
     WR --> PROXY --> EX
+    WR --> MSG
     WR --> LLM
     TEL --> VOICE
     JV --> LLM
@@ -113,13 +115,13 @@ flowchart LR
 | **Frontend** | Flutter / Dart 3.9 · Provider · GoRouter · custom 20 000×20 000 px canvas with edge wiring |
 | **Backend** | Python 3 · FastAPI · SQLAlchemy 2.0 (sync, psycopg2) · Pydantic |
 | **Data** | PostgreSQL 16 · Redis 7 (LRU eviction policy) |
-| **Real-time** | WebSocket hub with pub/sub fan-out · Lightstreamer client for IG Markets |
+| **Real-time** | WebSocket hub with pub/sub fan-out · long-lived WS connections to external data sources with a 0 ms read cache |
 | **Voice** | ElevenLabs Conversational AI · Asterisk ARI · Twilio · SIP · WebRTC · OpenAI Realtime (translator) |
 | **Auth & crypto** | JWT (python-jose) · bcrypt · Fernet authenticated-encryption for stored secrets |
 | **Edge / TLS** | Caddy 2 · automatic Let's Encrypt · gzip + zstd encoding |
 | **Containers** | Docker · Docker Compose · private image registry |
 | **CI / CD** | GitHub Actions with paths-filter — rebuild and redeploy only the services whose code changed |
-| **Egress / network** | Managed serverless egress proxy with rotating IPs (EU region) — protects against exchange-side IP-concentration rate limits |
+| **Egress / network** | Managed serverless egress proxy with rotating IPs (EU region) — protects against third-party-API IP-concentration rate limits |
 | **Block Platform** | Declarative `BlockDefinition` registry · auto-generated catalog & inspector UIs · rule-based edge wiring · uniform `_ApiMixin` for SDK adapters — adding a new integration is a small diff, not a fork |
 | **AI integrations** | Claude / Grok / GPT / DeepSeek / Groq via unified `ctx.llm` router · MCP server with 13 tools (FastMCP) |
 | **Observability** | Plausible analytics · structured logs · Redis stream of monitor events |
@@ -130,13 +132,13 @@ flowchart LR
 ## Selected features
 
 ### Block Platform — extensible by design
-Every block on the canvas — AI Agent, Bybit, PBX, Voice Translator, Worker, the lot — is registered through a single declarative API. The catalog page, the inspector dialogs, the edge auto-wiring, and the SDK adapters are all generated from those declarations. Adding a new integration (a new exchange, a new messenger, a custom enterprise service) is a small diff, not a fork. This is the core engineering moat — and the reason custom-block work for clients is realistic without compromising the platform. See [decisions.md → "A declarative block platform"](docs/decisions.md#13-a-declarative-block-platform-not-a-hard-coded-set).
+Every block on the canvas — AI Agent, Phone Number, PBX, Voice Translator, Worker, the lot — is registered through a single declarative API. The catalog page, the inspector dialogs, the edge auto-wiring, and the SDK adapters are all generated from those declarations. Adding a new integration (a new messenger, a custom enterprise service, a vendor API) is a small diff, not a fork. This is the core engineering moat — and the reason custom-block work for clients is realistic without compromising the platform. See [decisions.md → "A declarative block platform"](docs/decisions.md#13-a-declarative-block-platform-not-a-hard-coded-set).
 
 ### Edges replace configuration
-Drawing an edge between two blocks automatically wires up their SDK. Worker → Bybit edge ⇒ `ctx.bybit` becomes available inside the worker. Delete the edge ⇒ disconnected. **No manual config needed anywhere in the product.** Detailed write-up in [decisions.md → "Edges as the only source of configuration"](docs/decisions.md#1-edges-as-the-only-source-of-configuration).
+Drawing an edge between two blocks automatically wires up their SDK. Worker → Telegram edge ⇒ `ctx.telegram` becomes available inside the worker. Delete the edge ⇒ disconnected. **No manual config needed anywhere in the product.** Detailed write-up in [decisions.md → "Edges as the only source of configuration"](docs/decisions.md#1-edges-as-the-only-source-of-configuration).
 
 > ![Edge wiring screenshot](assets/screenshots/edge-wiring.png)
-> _Drawing an edge from Worker to Bybit auto-patches the worker's `cfg.trading_node_id` field. The worker code now sees `ctx.bybit`._
+> _Drawing an edge from Worker to Telegram auto-patches the worker's `cfg.telegram_node_id` field. The worker code now sees `ctx.telegram`._
 
 ### 24/7 sandboxed Python workers
 Users write Python directly in a Worker block. The runtime executes it in a restricted sandbox: locked-down `__import__`, no `open()` / `socket` / `subprocess`, 60-second tick timeout, persistent state in Redis with periodic Postgres snapshot for durability. Auto-heal can restart on errors and even ask Claude to fix the code.
@@ -144,11 +146,11 @@ Users write Python directly in a Worker block. The runtime executes it in a rest
 > ![Worker code editor](assets/screenshots/worker-code.png)
 > _Worker block with code editor, deploy button, status, and live logs. Tick model with `setup(ctx)` / `tick(ctx)` / `on_error(ctx, error)`._
 
-### Sub-millisecond exchange data via WebSocket cache
-In Server execution mode, the runtime maintains long-lived WS connections to 6 exchanges (Bybit, Binance, Deribit, OKX, Coinbase, Kraken) plus IG Markets via Lightstreamer. Workers calling `ctx.binance.get_ticker(...)` get cached state in **0 ms** instead of 80–250 ms via REST, with no rate-limit ceiling. Detailed write-up in [decisions.md → "WebSocket-cached exchange tier"](docs/decisions.md#3-websocket-cached-exchange-tier).
+### Sub-millisecond live data via WebSocket cache
+In Server execution mode, the runtime maintains long-lived WebSocket connections to external data sources and third-party APIs. Workers reading that data get cached state in **0 ms** instead of 80–250 ms via REST, with no rate-limit ceiling. Detailed write-up in [decisions.md → "WebSocket-cached live-data tier"](docs/decisions.md#3-websocket-cached-live-data-tier).
 
 > ![Worker monitor](assets/screenshots/monitor.png)
-> _Monitor block rendering live tickers, status indicators, position table, and a progress bar — pushed by `ctx.monitor.render(...)` from a Server-mode worker._
+> _Monitor block rendering live metrics, status indicators, data tables, and a progress bar — pushed by `ctx.monitor.render(...)` from a Server-mode worker._
 
 ### Real-time voice translation between two callers
 The Voice Translator block bridges two phone lines, transcribes each side, translates via OpenAI Realtime, and speaks the translation back to the other party. A glossary field forwards proper-noun and technical-term hints into both Realtime sessions to prevent mistranslation.
@@ -168,13 +170,11 @@ End-to-end ElevenLabs Conversational AI integration: phone numbers, AI agents, v
 
 | Surface | Number |
 |---|---|
-| Block types | 45+ across 9 sections |
-| Trading exchanges | 10 (8 crypto + 2 traditional) |
+| Block types | 45+ across 7 sections |
+| Messenger blocks | 7 across 4 platforms (Telegram · WhatsApp · Discord · Matrix) |
 | LLM providers | 5 (Claude · GPT · Grok · DeepSeek · Groq) |
-| `ctx.*` adapters in Worker SDK | 16 |
-| Binance adapter methods | 31 |
-| Deribit adapter methods | 33 |
-| Bybit adapter methods | 26 |
+| Telephony stack | ElevenLabs Conversational AI · Asterisk ARI · Twilio · SIP · WebRTC |
+| Worker SDK `ctx.*` adapters | messengers · HTTP · state · files · monitor · LLM · external data |
 | MCP tools | 13 |
 | Microservices | 6 |
 | Subdomains served | 4 — apex, app, api, docs |
@@ -198,7 +198,7 @@ If you'd like to:
 
 ## About
 
-Built by **Gennady Mikhaylov** — backend / full-stack engineer focused on real-time systems, voice AI, fintech integrations, and developer-tooling UX.
+Built by **Gennady Mikhaylov** — backend / full-stack engineer focused on real-time systems, voice AI, workflow automation, and developer-tooling UX.
 
 [LinkedIn → linkedin.com/in/gennady-mikhaylov](https://www.linkedin.com/in/gennady-mikhaylov/)
 

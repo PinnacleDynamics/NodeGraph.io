@@ -6,7 +6,7 @@ Hi — I'm **Gennady Mikhaylov**, the engineer behind AiSpinner. This document i
 
 **Open to remote.** I'm available for:
 
-- Senior / Staff engineering roles — backend, full-stack, real-time systems, fintech / voice AI / developer tooling
+- Senior / Staff engineering roles — backend, full-stack, real-time systems, voice AI / developer tooling
 - Contracts and consulting — same areas, plus architecture reviews and tech audits
 - Technical co-founder / founding engineer roles for the right product
 - **Custom AiSpinner integrations** — see below
@@ -21,7 +21,7 @@ Common shapes of work:
 
 - **Private vendor block** — your internal service / SDK / database is wrapped as an AiSpinner block, available only to your team's workspaces
 - **White-label deployment** — AiSpinner runs under your branding, with a curated subset of integrations and your own private blocks
-- **Domain-specific verticals** — pre-built workspaces with the right blocks already wired up (e.g. a trading-desk template, a customer-support-voice template, a market-monitoring template)
+- **Domain-specific verticals** — pre-built workspaces with the right blocks already wired up (e.g. a customer-support-voice template, a market-monitoring template)
 - **Architecture / migration consulting** — I'll write the same kind of [decisions document](docs/decisions.md) for your platform that I wrote for mine, with concrete recommendations
 
 If any of those fit what you're looking for, reach out via LinkedIn and we'll discuss scope.
@@ -30,10 +30,10 @@ If any of those fit what you're looking for, reach out via LinkedIn and we'll di
 
 A working product on a single VPS, serving four subdomains, six microservices, and 45 integration blocks. Things I have shipped and operated in production:
 
-- **Real-time systems.** WebSocket hubs, Lightstreamer client, sub-millisecond exchange data caches, voice translation between two phone calls
+- **Real-time systems.** WebSocket hubs, sub-millisecond live data caches over long-lived third-party API connections, voice translation between two phone calls
 - **Voice / telephony.** ElevenLabs Conversational AI, Asterisk ARI, Twilio, SIP, WebRTC, OpenAI Realtime, chunked auto-dialer with pause/resume
-- **Fintech integrations.** Direct API integrations with 10 exchanges (Bybit, Binance, Coinbase, OKX, Kraken, Deribit, Hyperliquid, Bitget, IG Markets, Interactive Brokers) and Polymarket. HMAC signing, IP-rotation egress proxy, WebSocket streaming
-- **Sandboxed code execution.** Restricted Python sandbox with a 16-adapter SDK, persistent state, auto-heal, batched logs
+- **External API integrations.** Direct integrations with third-party APIs and data sources, with HMAC signing, an IP-rotation egress proxy that protects against third-party API IP-concentration rate limits, and WebSocket streaming
+- **Sandboxed code execution.** Restricted Python sandbox with a uniform `_ApiMixin` adapter pattern (messengers, HTTP, LLM, state, files, monitor) — adding an integration is a small diff — plus persistent state, auto-heal, batched logs
 - **AI integrations.** Multi-LLM routing across Claude / GPT / Grok / DeepSeek / Groq, MCP server with 13 tools, AI-assisted code writing, Claude Agent SDK
 - **Frontend engineering.** Custom 20 000 × 20 000 px node canvas in Flutter Web, edge-wiring engine, declarative inspector schemas, real-time monitor widgets
 - **DevOps.** GitHub Actions with paths-filter, ghcr.io, Docker Compose, Caddy, Postgres tuning, Redis tuning, Cloud Run egress
