@@ -78,7 +78,7 @@ Six processes, all built from the same monorepo. Each has a small, clear respons
 |---|---|
 | **core-api** | Authentication (JWT, bcrypt), workspaces, graph CRUD with optimistic locking, node configs, integrations (encrypted API keys), MCP server with 13 tools, Jarvis chat |
 | **telephony** | ElevenLabs Conversational AI, Asterisk ARI bridge, SIP/Twilio phone-number import, chunked campaign auto-dialer, journal with transcripts and audio, post-call webhooks, voice translator (OpenAI Realtime) |
-| **worker-runtime** | Python sandbox executor with restricted builtins, 16 `ctx.*` adapters (state, log, monitor, http, 10 exchanges, telegram, files, llm), WebSocket cache to 6 exchanges, log batcher, monitor event stream |
+| **worker-runtime** | Python sandbox executor with restricted builtins, a uniform set of `ctx.*` adapters (state, log, monitor, http, llm, telegram, files) following one `_ApiMixin` pattern, WebSocket cache to external data sources, log batcher, monitor event stream |
 | **realtime** | WebSocket hub. Single connection per workspace fans out 7 event types (journal.new, call.done, batch.status, graph.version, etc.) to all subscribed clients |
 | **jarvis** | AI assistant chat. Uses the same `ai_tools` registry as MCP — keeps the assistant's capabilities and the MCP surface in lock-step. |
 | **mailer** | Transactional email (verification codes, password reset). Node.js — historical artifact from before the Python stack consolidated. |
@@ -102,7 +102,7 @@ Tuned for the workload (read-heavy graph + write-heavy telephony events). The sc
 - **Graph** rows — full graph JSON, optimistic locking via monotonically increasing `version`
 - **Per-node config** sidecar — separate from the graph row so node-level edits don't churn graph versions
 - **Telephony run** rows — parent rows are campaigns, child rows are individual calls
-- **Encrypted credential** rows for each integration (SIP, Twilio, ElevenLabs, ARI, exchanges)
+- **Encrypted credential** rows for each integration (SIP, Twilio, ElevenLabs, ARI, third-party APIs)
 
 The graph column is JSONB. We rebuild it whole on every save (instead of patching). Saves are debounced client-side and version-checked server-side — see [decisions.md](decisions.md).
 
@@ -159,7 +159,7 @@ sequenceDiagram
     participant WR as worker-runtime
     participant RD as Redis
     participant PR as Egress proxy
-    participant EX as Exchange
+    participant EX as External API
 
     U->>CO: POST /workers/deploy<br/>(code, tick_interval, connected_blocks)
     CO->>DB: persist code + config
@@ -172,8 +172,8 @@ sequenceDiagram
         WR->>WR: exec(code, sandbox_globals)
         WR->>RD: ctx.state.get/set
         WR->>RD: ctx.log.info (batched)
-        Note over WR,EX: Exchange call paths
-        WR->>PR: ctx.binance.get_ticker
+        Note over WR,EX: External API call paths
+        WR->>PR: ctx.http.get / ctx.telegram.send
         PR->>EX: HTTPS request
         EX-->>PR: response
         PR-->>WR: response
@@ -205,11 +205,11 @@ See [integrations.md](integrations.md) for the full `ctx.*` adapter list.
 
 ## 6. Egress proxy
 
-A separate small service runs in a managed serverless environment with rotating egress IPs (EU region, multi-tenant). Every outbound call from worker code (`ctx.http`, `ctx.binance`, `ctx.bybit`, etc.) is routed through it.
+A separate small service runs in a managed serverless environment with rotating egress IPs (EU region, multi-tenant). Every outbound call from worker code (`ctx.http`, `ctx.telegram`, etc.) is routed through it.
 
-**Problem it solves.** When many users share a single backend IP and all hit an exchange's API with their own keys, the exchange's IP-concentration heuristics flag the IP as suspicious and rate-limit or temporarily block the entire IP. Without the proxy, one user's misbehaving worker degrades the platform for everyone.
+**Problem it solves.** When many users share a single backend IP and all hit a third-party API with their own keys, the provider's IP-concentration heuristics flag the IP as suspicious and rate-limit or temporarily block the entire IP. Without the proxy, one user's misbehaving worker degrades the platform for everyone.
 
-**How it solves it.** The proxy distributes traffic across rotating egress IPs. HMAC-signed bodies (Bybit, OKX) pass through byte-for-byte — Python's default JSON encoder reorders keys alphabetically and would break exchange-side signature verification, so the proxy forwards the raw request body when needed.
+**How it solves it.** The proxy distributes traffic across rotating egress IPs. HMAC-signed bodies pass through byte-for-byte — Python's default JSON encoder reorders keys alphabetically and would break provider-side signature verification, so the proxy forwards the raw request body when needed.
 
 This is a **trade-off**, not a free win. Documented in [decisions.md → "Egress proxy"](decisions.md#7-egress-proxy).
 
@@ -221,7 +221,7 @@ This is a **trade-off**, not a free win. Documented in [decisions.md → "Egress
 |---|---|
 | User passwords | bcrypt hash, never stored in plaintext |
 | Session tokens | JWT (python-jose) with `uid`, `role`, `plan`; signed with HS256 |
-| API keys / wallet creds / SIP secrets | Fernet authenticated-encryption at rest. The encryption key lives in env, never in DB. Decrypted just-in-time by the service that needs to make the upstream call |
+| API keys / integration creds / SIP secrets | Fernet authenticated-encryption at rest. The encryption key lives in env, never in DB. Decrypted just-in-time by the service that needs to make the upstream call |
 | Browser→server | HTTPS only; Caddy auto-renews Let's Encrypt |
 | Worker ↔ backend communication | Short-lived internal tokens minted per worker session, scoped to that user. Workers never see user-facing JWTs |
 | MCP endpoint | Standard JWT Bearer. Same auth surface as REST. Stateless (`stateless_http=True` in FastMCP) |
@@ -243,7 +243,7 @@ Flutter Web in dark mode by default, served as a single-page app. Custom 20 000 
 | Secure storage | `flutter_secure_storage` for the JWT |
 | Builds | Flutter web release; assets cached aggressively, bootstrap files set to `no-cache` so deploys propagate immediately |
 
-The frontend treats edges as first-class. When the user draws a Worker → Bybit edge, the frontend automatically patches the worker's `cfg.trading_node_id` field — no inspector dialog required. This is enforced by a small declarative rule table (`kEdgeWiringRules`).
+The frontend treats edges as first-class. When the user draws a Worker → Telegram edge, the frontend automatically patches the worker's `cfg.telegram_node_id` field — no inspector dialog required. This is enforced by a small declarative rule table (`kEdgeWiringRules`).
 
 ---
 
@@ -324,7 +324,7 @@ flowchart LR
 
 ### What this enables
 
-- **Fast feature delivery.** A new exchange or messenger integration is days, not weeks.
+- **Fast feature delivery.** A new messenger or third-party API integration is days, not weeks.
 - **Custom client work.** Bespoke blocks for a specific client's service can be added as plugins without forking the platform — see [CONTRIBUTING.md](../CONTRIBUTING.md).
 - **Lock-step UI / API.** The frontend catalog can never lie about the backend's capabilities, because both read from the same registry.
 - **AI assistants get it for free.** The MCP `list_block_types` tool walks the registry directly, so any new block is immediately usable from Claude / Cursor / ChatGPT.
@@ -340,6 +340,6 @@ The architecture is, of course, easier to describe than to build. If you're eval
 - The edge-wiring engine that propagates config changes across the graph in O(1) per edge
 - The voice-translator state machine bridging two phone calls with two parallel OpenAI Realtime sessions and a shared glossary
 - The dialer's chunked-campaign coordinator that survives container restarts via Redis-backed signals
-- The Lightstreamer client wrapper for IG Markets — translating Lightstreamer's subscription model into the same `ctx.ig.*` API as the WebSocket exchanges
+- The WebSocket cache layer that holds long-lived connections to external data sources and serves workers cached state in ~0 ms instead of 80–250 ms over REST
 
 Each of these is between 500 and 1 500 lines of code. None of them is described in detail here, by design.
