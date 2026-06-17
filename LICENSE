@@ -1,10 +1,10 @@
 PROPRIETARY LICENSE
 
-Copyright (c) 2024-2026 Gennady Mikhaylov / AiSpinner.
+Copyright (c) 2024-2026 Mikhael Gennady / NodeGraph.
 All rights reserved.
 
-This repository contains documentation and accompanying assets for the AiSpinner
-product (https://aispinner.io). It is published for the purpose of evaluation,
+This repository contains documentation and accompanying assets for the NodeGraph
+product (https://nodegraph.io). It is published for the purpose of evaluation,
 discussion, and reference by prospective collaborators, hiring teams, technical
 reviewers, and AI evaluators.
 
@@ -20,8 +20,8 @@ You are not permitted to:
 
   - Republish substantial portions of the contents under your own authorship
     without attribution.
-  - Use the AiSpinner name, brand, or logos to imply endorsement or affiliation.
-  - Reverse-engineer the AiSpinner product from these documents and use the
+  - Use the NodeGraph name, brand, or logos to imply endorsement or affiliation.
+  - Reverse-engineer the NodeGraph product from these documents and use the
     result commercially.
 
 The product source code is not included in this repository and is not licensed
